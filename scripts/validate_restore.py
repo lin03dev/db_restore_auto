@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+import sys
+import subprocess
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config.settings import Config
+
+def validate_database(db_name: str) -> tuple:
+    env = {"PGPASSWORD": Config.LOCAL_DB_CONFIG['password']}
+    
+    # Check table count
+    cmd = ["psql", "-h", Config.LOCAL_DB_CONFIG['host'], "-p", str(Config.LOCAL_DB_CONFIG['port']),
+           "-U", Config.LOCAL_DB_CONFIG['username'], "-d", db_name,
+           "-tAc", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public';"]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if result.returncode == 0:
+        table_count = result.stdout.strip()
+        return True, int(table_count) if table_count else 0
+    return False, 0
+
+def main():
+    print("\n" + "="*60)
+    print("🔍 VALIDATION RESULTS")
+    print("="*60)
+    
+    databases = ["AG_Dev", "Telios_LMS_Survey_Dev"]
+    all_valid = True
+    
+    for db in databases:
+        success, tables = validate_database(db)
+        if success and tables > 0:
+            print(f"\n  ✅ {db}: {tables} tables")
+        else:
+            print(f"\n  ❌ {db}: No tables found")
+            all_valid = False
+    
+    print("\n" + "="*60)
+    if all_valid:
+        print("✅ All databases validated successfully!")
+    else:
+        print("❌ Validation failed - some databases have no data")
+    
+    return 0 if all_valid else 1
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Database dumps (too large for git)
+dumps/*.dump
+dumps/*.sql
+*.dump
+*.sql
+
+# Logs
+logs/
+*.log
+
+# Configuration with secrets
+.env
+config/databases.yaml
+.restore_tracking.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Reports
+reports/
+*.json
+!requirements.json
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak
+*.backup
+
+# OS files
+Thumbs.db
+.desktop.ini
