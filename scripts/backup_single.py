@@ -44,7 +44,7 @@ def backup_single_database(db_name: str):
         print(f"⚠️ Removing empty dump file: {dump_path}")
         dump_path.unlink()
     
-    success = manager.execute_backup_command(db_config, dump_path)
+    success = manager.execute_backup(db_config, dump_path)
     
     if success:
         size_mb = dump_path.stat().st_size / 1024 / 1024

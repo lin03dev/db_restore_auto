@@ -11,11 +11,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Config
 
 class RestoreManager:
-    def __init__(self, config_path: str = "config/databases.yaml"):
+    def __init__(self, config_path: str = "config/databases.yaml", restore_cooldown_days: int = 7, skip_recent_restore: bool = False):
         self.config_path = Path(config_path)
         self.config = self.load_config()
         self.local = self.config.get('local_postgres', {})
         self.tracking_file = Config.BASE_DIR / ".restore_tracking.json"
+        self.restore_cooldown_days = restore_cooldown_days
+        self.skip_recent_restore = skip_recent_restore
         
     def load_config(self) -> Dict[str, Any]:
         with open(self.config_path, 'r') as f:
@@ -85,7 +87,6 @@ class RestoreManager:
     
     def restore_all(self, force: bool = False) -> Dict[str, bool]:
         results = {}
-        all_success = True
         
         for db in self.config['databases']:
             if not db.get('enabled', True):
@@ -96,7 +97,6 @@ class RestoreManager:
             if not dump_path.exists() or dump_path.stat().st_size == 0:
                 print(f"\n  ❌ Dump not found: {db['source_dump']}")
                 results[db['name']] = False
-                all_success = False
                 continue
             
             print(f"\n  🗑️  Dropping {target_db}...")
@@ -112,7 +112,6 @@ class RestoreManager:
                 self.save_tracking(target_db)
             else:
                 print(f"  ❌ {db['name']} restore failed")
-                all_success = False
         
         return results
     
@@ -124,3 +123,30 @@ class RestoreManager:
         tracking[db_name] = datetime.now().isoformat()
         with open(self.tracking_file, 'w') as f:
             json.dump(tracking, f, indent=2)
+    
+    def get_restore_status(self) -> Dict[str, Any]:
+        """Get restore status for all databases"""
+        status = {}
+        tracking = {}
+        if self.tracking_file.exists():
+            with open(self.tracking_file, 'r') as f:
+                tracking = json.load(f)
+        
+        for db in self.config['databases']:
+            target_db = db['target_db']
+            last_restore = tracking.get(target_db)
+            if last_restore:
+                last_date = datetime.fromisoformat(last_restore)
+                days_ago = (datetime.now() - last_date).days
+                status[target_db] = {
+                    'last_restore': last_restore,
+                    'days_ago': days_ago,
+                    'can_restore': days_ago >= self.restore_cooldown_days
+                }
+            else:
+                status[target_db] = {
+                    'last_restore': None,
+                    'days_ago': None,
+                    'can_restore': True
+                }
+        return status
