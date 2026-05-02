@@ -5,9 +5,100 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
 import yaml
+import threading
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Config
+
+class ProgressBar:
+    """Enhanced progress bar with ETA and speed"""
+    
+    def __init__(self, total_size_mb=None, description="Progress"):
+        self.total_size_mb = total_size_mb
+        self.description = description
+        self.start_time = time.time()
+        self.last_size = 0
+        self.last_time = self.start_time
+        self.current_size = 0
+        self.speeds = []
+        
+    def update(self, current_size_mb, current_table=""):
+        """Update progress bar"""
+        self.current_size = current_size_mb
+        now = time.time()
+        elapsed = now - self.start_time
+        
+        # Calculate speed (moving average of last 5 samples)
+        if now - self.last_time > 0:
+            speed = (current_size_mb - self.last_size) / (now - self.last_time)
+            self.speeds.append(speed)
+            if len(self.speeds) > 5:
+                self.speeds.pop(0)
+            avg_speed = sum(self.speeds) / len(self.speeds)
+        else:
+            avg_speed = 0
+        
+        self.last_size = current_size_mb
+        self.last_time = now
+        
+        # Calculate ETA
+        if self.total_size_mb and avg_speed > 0:
+            remaining_mb = max(0, self.total_size_mb - current_size_mb)
+            eta_seconds = remaining_mb / avg_speed
+            eta_str = self.format_time(eta_seconds)
+        else:
+            eta_str = "calculating..."
+        
+        # Calculate percentage
+        if self.total_size_mb and self.total_size_mb > 0:
+            percent = min(100, (current_size_mb / self.total_size_mb) * 100)
+        else:
+            percent = min(99, (current_size_mb / max(current_size_mb + 10, 1)) * 100)
+        
+        # Create progress bar
+        bar_length = 50
+        filled_length = int(bar_length * percent / 100)
+        bar = '█' * filled_length + '░' * (bar_length - filled_length)
+        
+        # Format sizes
+        current_str = self.format_size(current_size_mb)
+        total_str = self.format_size(self.total_size_mb) if self.total_size_mb else "unknown"
+        speed_str = self.format_size(avg_speed)
+        
+        # Build progress line
+        line = f"\r{self.description} │{bar}│ {percent:5.1f}% [{current_str}/{total_str}] {speed_str}/s ETA:{eta_str}"
+        if current_table:
+            table_display = current_table[:40] + "..." if len(current_table) > 40 else current_table
+            line += f" │ {table_display}"
+        
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    
+    @staticmethod
+    def format_size(size_mb):
+        """Format size in appropriate units"""
+        if size_mb < 1:
+            return f"{size_mb * 1024:.1f}KB"
+        elif size_mb < 1024:
+            return f"{size_mb:.1f}MB"
+        else:
+            return f"{size_mb / 1024:.2f}GB"
+    
+    @staticmethod
+    def format_time(seconds):
+        """Format time in appropriate units"""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            return f"{seconds/60:.1f}m"
+        else:
+            return f"{seconds/3600:.1f}h"
+    
+    def finish(self):
+        """Mark progress as complete"""
+        elapsed = time.time() - self.start_time
+        sys.stdout.write(f"\r{self.description} │{'█' * 50}│ 100% [Complete in {self.format_time(elapsed)}]    \n")
+        sys.stdout.flush()
 
 class BackupManager:
     def __init__(self, config_path: str = "config/databases.yaml", max_age_days: int = 7):
@@ -24,6 +115,29 @@ class BackupManager:
             return file_path.stat().st_size / 1024 / 1024
         return 0
     
+    def get_estimated_total_size(self, conn_string: str, pg_dump_path: str) -> float:
+        """Estimate total database size in MB"""
+        try:
+            # Use psql to get database size
+            psql_path = pg_dump_path.replace('pg_dump', 'psql')
+            cmd = [psql_path, conn_string, "-tAc", 
+                   "SELECT pg_database_size(current_database()) / 1024 / 1024;"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
+        except Exception as e:
+            print(f"     Could not estimate size: {e}")
+        return None
+    
+    def format_size(self, size_mb: float) -> str:
+        """Format size in appropriate units"""
+        if size_mb < 1:
+            return f"{size_mb * 1024:.1f} KB"
+        elif size_mb < 1024:
+            return f"{size_mb:.1f} MB"
+        else:
+            return f"{size_mb / 1024:.2f} GB"
+    
     def needs_backup(self, dump_path: Path) -> bool:
         if not dump_path.exists() or dump_path.stat().st_size == 0:
             return True
@@ -39,6 +153,11 @@ class BackupManager:
         print(f"\n  📦 Backing up {db_name}...")
         print(f"  🔧 Using pg_dump: {pg_dump_path}")
         
+        # Try to estimate total size
+        estimated_size_mb = self.get_estimated_total_size(conn_string, pg_dump_path)
+        if estimated_size_mb:
+            print(f"  📊 Estimated size: {self.format_size(estimated_size_mb)}")
+        
         # Remove empty/incomplete dump file if exists
         if dump_path.exists() and dump_path.stat().st_size == 0:
             dump_path.unlink()
@@ -48,10 +167,15 @@ class BackupManager:
                 print(f"     Retry attempt {attempt + 1}/{retry_count}...")
                 time.sleep(5)
             
-            # Build command using list format (more reliable)
+            # Build command
             cmd = [pg_dump_path, conn_string, "-F", "c", "-v", "-f", str(dump_path)]
             
             start_time = time.time()
+            start_size = self.get_file_size_mb(dump_path) if dump_path.exists() else 0
+            
+            # Create progress bar
+            progress = ProgressBar(estimated_size_mb, f"  {db_name}")
+            current_table = "Starting..."
             
             try:
                 # Execute and capture output
@@ -60,29 +184,30 @@ class BackupManager:
                     stdout=subprocess.PIPE, 
                     stderr=subprocess.STDOUT,
                     text=True,
-                    bufsize=1
+                    bufsize=1,
+                    universal_newlines=True
                 )
                 
-                last_size = 0
-                last_update = start_time
                 timeout = 7200  # 2 hour timeout
+                last_update = time.time()
                 
-                # Read output for progress
+                # Thread for monitoring file size
+                def monitor_file_size():
+                    while process.poll() is None:
+                        current_size = self.get_file_size_mb(dump_path)
+                        progress.update(current_size, current_table)
+                        time.sleep(1)
+                
+                # Start monitoring thread
+                monitor_thread = threading.Thread(target=monitor_file_size, daemon=True)
+                monitor_thread.start()
+                
+                # Read output to get table names
                 for line in process.stdout:
-                    if "dumping contents" in line.lower():
-                        table_name = line.split('"')[-2] if '"' in line else "tables"
-                        sys.stdout.write(f'\r     Dumping: {table_name:<50}')
-                        sys.stdout.flush()
-                    
-                    # Check file growth
-                    current_size = self.get_file_size_mb(dump_path)
-                    if time.time() - last_update >= 5 and current_size > last_size:
-                        elapsed = time.time() - start_time
-                        speed = current_size / elapsed if elapsed > 0 else 0
-                        sys.stdout.write(f'\r     Progress: {current_size:.1f} MB at {speed:.1f} MB/s')
-                        sys.stdout.flush()
-                        last_size = current_size
-                        last_update = time.time()
+                    if "dumping contents of table" in line.lower():
+                        parts = line.split('"')
+                        if len(parts) >= 2:
+                            current_table = parts[1]
                     
                     # Check timeout
                     if time.time() - start_time > timeout:
@@ -92,18 +217,32 @@ class BackupManager:
                 
                 # Wait for completion
                 return_code = process.wait()
-                print()  # New line after progress
+                monitor_thread.join(timeout=1)
+                
+                # Final update
+                final_size = self.get_file_size_mb(dump_path)
+                progress.finish()
                 
                 # Check if backup succeeded
                 if return_code == 0 and dump_path.exists() and dump_path.stat().st_size > 0:
-                    size_mb = self.get_file_size_mb(dump_path)
-                    print(f"     ✅ Backup complete: {size_mb:.1f} MB in {time.time() - start_time:.1f}s")
+                    total_time = time.time() - start_time
+                    avg_speed = final_size / total_time if total_time > 0 else 0
+                    
+                    print(f"     ✅ Backup complete!")
+                    print(f"        Final size: {self.format_size(final_size)}")
+                    print(f"        Total time: {ProgressBar.format_time(total_time)}")
+                    print(f"        Avg speed:  {ProgressBar.format_size(avg_speed)}/s")
                     return True
                 else:
                     print(f"     ⚠️ Backup attempt {attempt + 1} failed (return code: {return_code})")
                     if dump_path.exists():
                         dump_path.unlink()
                         
+            except KeyboardInterrupt:
+                print(f"\n     ⚠️ Backup interrupted by user")
+                if dump_path.exists():
+                    dump_path.unlink()
+                return False
             except Exception as e:
                 print(f"     ⚠️ Exception during backup: {str(e)}")
                 if dump_path.exists():
@@ -120,24 +259,26 @@ class BackupManager:
         
         for db in self.config['databases']:
             if not db.get('enabled', True):
+                print(f"\n  ⏭️  Skipping {db['name']} (disabled)")
+                results[db['name']] = True
                 continue
             
             dump_path = Config.DUMPS_DIR / db['source_dump']
             
-            # Check if backup is needed
             if force:
                 print(f"\n  Force backup requested for {db['name']}")
                 success = self.execute_backup(db, dump_path)
             elif self.needs_backup(dump_path):
                 if dump_path.exists():
                     size = self.get_file_size_mb(dump_path)
-                    print(f"\n  {db['name']} dump needs refresh (current size: {size:.1f} MB)")
+                    print(f"\n  {db['name']} dump needs refresh ({self.format_size(size)}, {self.max_age_days} day limit)")
                 else:
                     print(f"\n  No existing dump for {db['name']}")
                 success = self.execute_backup(db, dump_path)
             else:
                 size = self.get_file_size_mb(dump_path)
-                print(f"\n  ✅ Using existing {db['name']} dump ({size:.1f} MB, {self.max_age_days} day max age)")
+                age_days = (datetime.now() - datetime.fromtimestamp(dump_path.stat().st_mtime)).days
+                print(f"\n  ✅ Using existing {db['name']} dump ({self.format_size(size)}, {age_days} days old)")
                 success = True
             
             results[db['name']] = success
@@ -145,7 +286,6 @@ class BackupManager:
         return results
     
     def get_backup_summary(self) -> Dict[str, Any]:
-        """Get summary of all backups"""
         summary = {}
         for db in self.config['databases']:
             dump_path = Config.DUMPS_DIR / db['source_dump']
