@@ -1,4 +1,3 @@
-cat > README.md << 'EOF'
 # Database Backup & Restore Automation System
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -46,3 +45,14 @@ nano config/databases.yaml
 
 # Create necessary directories
 mkdir -p dumps logs/backup logs/restore logs/error logs/reports
+
+## Windows usage
+
+Use the Windows wrapper commands in the repository root or invoke Python directly:
+
+```bat
+run.bat
+python scripts\backup_single.py AG
+python scripts\restore_script.py --force
+python scripts\validate_restore.py --all
+```

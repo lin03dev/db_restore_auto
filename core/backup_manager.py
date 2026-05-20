@@ -1,6 +1,7 @@
 import subprocess
 import time
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -9,6 +10,7 @@ import threading
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Config
+from utils.pg_tools import find_pg_tool, pg_tool_or_raise
 
 class ProgressBar:
     """Enhanced progress bar with ETA and speed"""
@@ -109,6 +111,29 @@ class BackupManager:
     def load_config(self) -> Dict[str, Any]:
         with open(self.config_path, 'r') as f:
             return yaml.safe_load(f)
+
+    def resolve_pg_tool(self, configured_path: str, tool_name: str) -> str:
+        """Resolve PostgreSQL CLI tools across Linux-style and Windows paths."""
+        return pg_tool_or_raise(tool_name, configured_path)
+
+    def resolve_connection_string(self, db_config: Dict[str, Any]) -> str:
+        source_config = db_config.get('source_config', {})
+        conn_string = source_config.get('connection_string')
+        if conn_string:
+            return conn_string
+
+        env_name = source_config.get('connection_string_env')
+        if env_name:
+            conn_string = os.getenv(env_name)
+            if conn_string:
+                return conn_string
+            raise ValueError(
+                f"Missing environment variable {env_name} for database {db_config.get('name')}"
+            )
+
+        raise ValueError(
+            f"Missing source_config.connection_string for database {db_config.get('name')}"
+        )
     
     def get_file_size_mb(self, file_path: Path) -> float:
         if file_path.exists():
@@ -119,7 +144,13 @@ class BackupManager:
         """Estimate total database size in MB"""
         try:
             # Use psql to get database size
-            psql_path = pg_dump_path.replace('pg_dump', 'psql')
+            psql_path = find_pg_tool(
+                "psql",
+                str(Path(pg_dump_path).with_name("psql")) if pg_dump_path else "psql",
+            )
+            if not psql_path:
+                print("     Could not estimate size: psql was not found")
+                return None
             cmd = [psql_path, conn_string, "-tAc", 
                    "SELECT pg_database_size(current_database()) / 1024 / 1024;"]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -147,8 +178,9 @@ class BackupManager:
     
     def execute_backup(self, db_config: Dict[str, Any], dump_path: Path, retry_count: int = 2) -> bool:
         db_name = db_config['name']
-        conn_string = db_config['source_config']['connection_string']
-        pg_dump_path = db_config['source_config'].get('pg_dump_path', '/usr/bin/pg_dump')
+        conn_string = self.resolve_connection_string(db_config)
+        configured_pg_dump = db_config.get('source_config', {}).get('pg_dump_path', 'pg_dump')
+        pg_dump_path = self.resolve_pg_tool(configured_pg_dump, "pg_dump")
         
         print(f"\n  📦 Backing up {db_name}...")
         print(f"  🔧 Using pg_dump: {pg_dump_path}")
@@ -251,13 +283,19 @@ class BackupManager:
         print(f"     ❌ Backup failed after {retry_count} attempts")
         return False
     
-    def backup_all(self, force: bool = False) -> Dict[str, bool]:
+    def backup_all(self, force: bool = False, target_name: Optional[str] = None) -> Dict[str, bool]:
         results = {}
         print(f"\n{'='*60}")
         print(f"📦 BACKUP OPERATION")
         print(f"{'='*60}")
         
         for db in self.config['databases']:
+            if target_name and target_name != 'both':
+                matches_name = db['name'].lower() == target_name.lower()
+                matches_target = db.get('target_db', '').lower() == target_name.lower()
+                if not matches_name and not matches_target:
+                    continue
+
             if not db.get('enabled', True):
                 print(f"\n  ⏭️  Skipping {db['name']} (disabled)")
                 results[db['name']] = True

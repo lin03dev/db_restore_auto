@@ -1,15 +1,18 @@
 import subprocess
 import time
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import yaml
 import json
 import threading
+from collections import deque
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Config
+from utils.pg_tools import pg_tool_or_raise
 
 class RestoreProgressBar:
     """Progress bar for restore operations"""
@@ -50,10 +53,16 @@ class RestoreProgressBar:
         sys.stdout.flush()
 
 class RestoreManager:
-    def __init__(self, config_path: str = "config/databases.yaml", restore_cooldown_days: int = 7, skip_recent_restore: bool = False):
+    def __init__(self, config_path: str = "config/databases.yaml", restore_cooldown_days: int = 7, skip_recent_restore: bool = True):
         self.config_path = Path(config_path)
         self.config = self.load_config()
         self.local = self.config.get('local_postgres', {})
+        self.local.update({
+            "host": os.getenv("LOCAL_DB_HOST", self.local.get("host", "localhost")),
+            "port": os.getenv("LOCAL_DB_PORT", self.local.get("port", "5432")),
+            "username": os.getenv("LOCAL_DB_USER", self.local.get("username", "postgres")),
+            "password": os.getenv("LOCAL_DB_PASSWORD", self.local.get("password", "")),
+        })
         self.tracking_file = Config.BASE_DIR / ".restore_tracking.json"
         self.restore_cooldown_days = restore_cooldown_days
         self.skip_recent_restore = skip_recent_restore
@@ -61,6 +70,9 @@ class RestoreManager:
     def load_config(self) -> Dict[str, Any]:
         with open(self.config_path, 'r') as f:
             return yaml.safe_load(f)
+
+    def resolve_pg_tool(self, tool_name: str) -> str:
+        return pg_tool_or_raise(tool_name)
     
     def get_file_size_mb(self, file_path: Path) -> float:
         if file_path.exists():
@@ -76,24 +88,27 @@ class RestoreManager:
             return f"{size_mb / 1024:.2f} GB"
     
     def drop_database(self, db_name: str) -> bool:
-        env = {"PGPASSWORD": self.local.get('password', '')}
-        cmd = ["dropdb", "--if-exists", "-h", self.local['host'], "-p", str(self.local['port']), 
+        env = os.environ.copy()
+        env.update({"PGPASSWORD": self.local.get('password', '')})
+        cmd = [self.resolve_pg_tool("dropdb"), "--if-exists", "-h", self.local['host'], "-p", str(self.local['port']), 
                "-U", self.local['username'], db_name]
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         return result.returncode == 0
     
     def create_database(self, db_name: str) -> bool:
-        env = {"PGPASSWORD": self.local.get('password', '')}
-        cmd = ["createdb", "-h", self.local['host'], "-p", str(self.local['port']),
+        env = os.environ.copy()
+        env.update({"PGPASSWORD": self.local.get('password', '')})
+        cmd = [self.resolve_pg_tool("createdb"), "-h", self.local['host'], "-p", str(self.local['port']),
                "-U", self.local['username'], "-O", self.local['username'], db_name]
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         return result.returncode == 0
     
     def verify_restore(self, db_name: str) -> bool:
-        env = {"PGPASSWORD": self.local.get('password', '')}
-        cmd = ["psql", "-h", self.local['host'], "-p", str(self.local['port']),
+        env = os.environ.copy()
+        env.update({"PGPASSWORD": self.local.get('password', '')})
+        cmd = [self.resolve_pg_tool("psql"), "-h", self.local['host'], "-p", str(self.local['port']),
                "-U", self.local['username'], "-d", db_name,
-               "-tAc", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public';"]
+               "-tAc", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog');"]
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if result.returncode == 0 and result.stdout.strip():
             table_count = int(result.stdout.strip())
@@ -104,8 +119,9 @@ class RestoreManager:
         size_mb = self.get_file_size_mb(dump_path)
         print(f"\n  📁 Restoring {target_db} ({self.format_size(size_mb)})...")
         
-        env = {"PGPASSWORD": self.local.get('password', '')}
-        cmd = ["pg_restore", "-h", self.local['host'], "-p", str(self.local['port']),
+        env = os.environ.copy()
+        env.update({"PGPASSWORD": self.local.get('password', '')})
+        cmd = [self.resolve_pg_tool("pg_restore"), "-h", self.local['host'], "-p", str(self.local['port']),
                "-U", self.local['username'], "--dbname", target_db, "--clean", 
                "--if-exists", "--no-owner", "--verbose", str(dump_path)]
         
@@ -113,44 +129,78 @@ class RestoreManager:
         progress = RestoreProgressBar(f"  Restoring {target_db}")
         
         # Run restore process
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                                   text=True, env=env, bufsize=1)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, env=env, bufsize=1, errors="replace")
         
-        last_update = start_time
         last_line = ""
-        
+        output_tail = deque(maxlen=30)
+
+        def read_restore_output():
+            nonlocal last_line
+            if not process.stdout:
+                return
+            for line in process.stdout:
+                clean_line = line.strip()
+                if clean_line:
+                    last_line = clean_line
+                    output_tail.append(clean_line)
+
+        output_thread = threading.Thread(target=read_restore_output, daemon=True)
+        output_thread.start()
+
         # Monitor progress
         while process.poll() is None:
             elapsed = time.time() - start_time
             progress.update(elapsed, last_line)
             time.sleep(1)
-        
+
+        output_thread.join(timeout=5)
+
         # Check return code and verify
-        success = process.returncode == 0 or self.verify_restore(target_db)
+        final_table_count = self.verify_table_count(target_db)
+        success = final_table_count > 0
         progress.finish(success)
         
         if success:
-            final_table_count = self.verify_table_count(target_db)
+            if process.returncode != 0:
+                print(f"     WARNING: pg_restore exited with code {process.returncode}, but tables were found")
+                if output_tail:
+                    print("     Last pg_restore output:")
+                    for line in list(output_tail)[-10:]:
+                        print(f"       {line}")
             print(f"     ✅ Restore successful! Tables: {final_table_count}")
             return True
         else:
+            print(f"     Restore failed (pg_restore exit code: {process.returncode})")
+            if output_tail:
+                print("     Last pg_restore output:")
+                for line in list(output_tail)[-15:]:
+                    print(f"       {line}")
             print(f"     ❌ Restore failed")
             return False
     
     def verify_table_count(self, db_name: str) -> int:
-        env = {"PGPASSWORD": self.local.get('password', '')}
-        cmd = ["psql", "-h", self.local['host'], "-p", str(self.local['port']),
+        env = os.environ.copy()
+        env.update({"PGPASSWORD": self.local.get('password', '')})
+        cmd = [self.resolve_pg_tool("psql"), "-h", self.local['host'], "-p", str(self.local['port']),
                "-U", self.local['username'], "-d", db_name,
-               "-tAc", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public';"]
+               "-tAc", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog');"]
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if result.returncode == 0 and result.stdout.strip():
             return int(result.stdout.strip())
         return 0
     
-    def restore_all(self, force: bool = False) -> Dict[str, bool]:
+    def restore_all(self, force: bool = False, target_name: Optional[str] = None) -> Dict[str, bool]:
         results = {}
+        restore_status = self.get_restore_status()
         
         for db in self.config['databases']:
+            if target_name and target_name != 'both':
+                matches_name = db['name'].lower() == target_name.lower()
+                matches_target = db.get('target_db', '').lower() == target_name.lower()
+                if not matches_name and not matches_target:
+                    continue
+
             if not db.get('enabled', True):
                 print(f"\n  ⏭️  Skipping {db['name']} (disabled)")
                 results[db['name']] = True
@@ -158,6 +208,17 @@ class RestoreManager:
             
             dump_path = Config.DUMPS_DIR / db['source_dump']
             target_db = db['target_db']
+
+            if self.skip_recent_restore and not force:
+                db_status = restore_status.get(target_db, {})
+                if not db_status.get('can_restore', True):
+                    print(
+                        f"\n  ⏸️  Skipping {target_db} "
+                        f"(restored {db_status.get('days_ago')} days ago; "
+                        f"cooldown is {self.restore_cooldown_days} days)"
+                    )
+                    results[db['name']] = True
+                    continue
             
             if not dump_path.exists() or dump_path.stat().st_size == 0:
                 print(f"\n  ❌ Dump not found: {db['source_dump']}")

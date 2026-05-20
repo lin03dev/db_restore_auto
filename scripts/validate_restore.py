@@ -1,16 +1,35 @@
 #!/usr/bin/env python3
 import sys
+import os
 import subprocess
 from pathlib import Path
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Config
+from utils.pg_tools import pg_tool_or_raise
+
+def configured_databases():
+    config_path = Config.BASE_DIR / "config" / "databases.yaml"
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    return [
+        db["target_db"]
+        for db in config.get("databases", [])
+        if db.get("enabled", True)
+    ]
 
 def validate_database(db_name: str) -> tuple:
-    env = {"PGPASSWORD": Config.LOCAL_DB_CONFIG['password']}
+    env = os.environ.copy()
+    env.update({"PGPASSWORD": Config.LOCAL_DB_CONFIG['password']})
     
     # Check table count
-    cmd = ["psql", "-h", Config.LOCAL_DB_CONFIG['host'], "-p", str(Config.LOCAL_DB_CONFIG['port']),
+    try:
+        psql = pg_tool_or_raise("psql")
+    except FileNotFoundError:
+        return False, 0
+
+    cmd = [psql, "-h", Config.LOCAL_DB_CONFIG['host'], "-p", str(Config.LOCAL_DB_CONFIG['port']),
            "-U", Config.LOCAL_DB_CONFIG['username'], "-d", db_name,
            "-tAc", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public';"]
     
@@ -25,7 +44,7 @@ def main():
     print("🔍 VALIDATION RESULTS")
     print("="*60)
     
-    databases = ["AG_Dev", "Telios_LMS_Survey_Dev"]
+    databases = configured_databases()
     all_valid = True
     
     for db in databases:

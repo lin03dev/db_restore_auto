@@ -83,25 +83,22 @@ class DatabaseOrchestrator:
             
             backup_mgr = BackupManager(max_age_days=7)
             
-            # TODO: Add specific database filtering if needed
-            results = backup_mgr.backup_all_databases(force=actual_force)
+            results = backup_mgr.backup_all(force=actual_force, target_name=specific_db)
             
-            success = all(r['success'] for r in results.values())
+            success = all(results.values()) if results else False
             self.results['backup'] = {
                 'success': success,
                 'details': results,
                 'forced': actual_force,
                 'skip_age_check': skip_age_check,
-                'backups_created': any(r.get('backup_performed', False) for r in results.values())
+                'backups_created': actual_force or skip_age_check
             }
             
             if success:
                 print("\n✅ Backup operation completed")
                 for db, result in results.items():
-                    if result.get('backup_performed'):
-                        print(f"   • {db}: ✅ New backup created")
-                    else:
-                        print(f"   • {db}: ⏭️  Using existing backup (age: {result.get('age_days', 'N/A')} days)")
+                    status = "✅ Success" if result else "❌ Failed"
+                    print(f"   • {db}: {status}")
             else:
                 print("\n❌ Backup operation failed")
             
@@ -136,7 +133,7 @@ class DatabaseOrchestrator:
                 skip_recent_restore=not skip_cooldown  # Skip check if cooldown disabled
             )
             
-            results = restore_mgr.restore_all_databases(force=actual_force)
+            results = restore_mgr.restore_all(force=actual_force, target_name=specific_db)
             
             success = all(results.values())
             self.results['restore'] = {
@@ -174,7 +171,7 @@ class DatabaseOrchestrator:
             if full:
                 print("Running FULL validation (this may take a few minutes)...")
                 # Full validation using validate_restore.py
-                cmd = ['python3', 'scripts/validate_restore.py', '--all']
+                cmd = [sys.executable, 'scripts/validate_restore.py', '--all']
                 result = subprocess.run(cmd, capture_output=True, text=True, cwd=Config.BASE_DIR)
                 success = result.returncode == 0
                 
@@ -186,7 +183,7 @@ class DatabaseOrchestrator:
             else:
                 print("Running QUICK validation...")
                 # Quick validation
-                cmd = ['python3', 'scripts/quick_validation.py']
+                cmd = [sys.executable, 'scripts/quick_validation.py']
                 result = subprocess.run(cmd, capture_output=True, text=True, cwd=Config.BASE_DIR)
                 success = result.returncode == 0
                 
@@ -394,26 +391,26 @@ def main():
 ║ COMMAND EXAMPLES:                                                    ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ Normal operations (respects age and cooldown):                       ║
-║   python3 scripts/orchestrator.py                                    ║
+║   python scripts/orchestrator.py                                    ║
 ║                                                                      ║
 ║ Force operations (ignore all checks):                                ║
-║   python3 scripts/orchestrator.py --force-backup --force-restore    ║
+║   python scripts/orchestrator.py --force-backup --force-restore    ║
 ║                                                                      ║
 ║ Skip checks but don't force:                                         ║
-║   python3 scripts/orchestrator.py --no-backup-check                 ║
-║   python3 scripts/orchestrator.py --no-restore-check                ║
+║   python scripts/orchestrator.py --no-backup-check                 ║
+║   python scripts/orchestrator.py --no-restore-check                ║
 ║                                                                      ║
 ║ Partial operations:                                                  ║
-║   python3 scripts/orchestrator.py --skip-backup                     ║
-║   python3 scripts/orchestrator.py --skip-restore                    ║
-║   python3 scripts/orchestrator.py --skip-validation                 ║
+║   python scripts/orchestrator.py --skip-backup                     ║
+║   python scripts/orchestrator.py --skip-restore                    ║
+║   python scripts/orchestrator.py --skip-validation                 ║
 ║                                                                      ║
 ║ Status and management:                                               ║
-║   python3 scripts/orchestrator.py --status                          ║
-║   python3 scripts/orchestrator.py --reset                           ║
+║   python scripts/orchestrator.py --status                          ║
+║   python scripts/orchestrator.py --reset                           ║
 ║                                                                      ║
 ║ Full control combination:                                            ║
-║   python3 scripts/orchestrator.py --force-backup --force-restore    ║
+║   python scripts/orchestrator.py --force-backup --force-restore    ║
 ║   --full-validation                                                 ║
 ╚══════════════════════════════════════════════════════════════════════╝
         """
@@ -438,8 +435,8 @@ def main():
     
     # Targeting
     target_group = parser.add_argument_group('Targeting')
-    target_group.add_argument('--database', '-d', choices=['AG_Dev', 'Telios_LMS_Survey_Dev', 'both'],
-                             default='both', help='Specific database to operate on')
+    target_group.add_argument('--database', '-d', default='both',
+                             help='Database name or target DB from config/databases.yaml, or both')
     
     # Validation
     validate_group = parser.add_argument_group('Validation')

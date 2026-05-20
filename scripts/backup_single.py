@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Backup a single database
-Usage: python3 backup_single.py <database_name>
-Example: python3 backup_single.py AG
-         python3 backup_single.py Telios
+Usage: python scripts/backup_single.py <database_name>
+Example: python scripts/backup_single.py AG
+         python scripts/backup_single.py Telios
 """
 import sys
 import yaml
@@ -15,13 +15,13 @@ from config.settings import Config
 
 def backup_single_database(db_name: str):
     # Load config
-    with open('config/databases.yaml', 'r') as f:
+    with open(Config.BASE_DIR / 'config' / 'databases.yaml', 'r') as f:
         config = yaml.safe_load(f)
     
     # Find the database config
     db_config = None
     for db in config['databases']:
-        if db['name'].lower() == db_name.lower():
+        if db['name'].lower() == db_name.lower() or db.get('target_db', '').lower() == db_name.lower():
             db_config = db
             break
     
@@ -58,9 +58,9 @@ def backup_single_database(db_name: str):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python3 scripts/backup_single.py <database_name>")
-        print("Example: python3 scripts/backup_single.py AG")
-        print("         python3 scripts/backup_single.py Telios")
+        print("Usage: python scripts/backup_single.py <database_name>")
+        print("Example: python scripts/backup_single.py AG")
+        print("         python scripts/backup_single.py Telios")
         sys.exit(1)
     
     success = backup_single_database(sys.argv[1])

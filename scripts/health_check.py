@@ -3,10 +3,23 @@
 Check health of backups and databases
 """
 import sys
+import os
 from pathlib import Path
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import Config
+from utils.pg_tools import pg_tool_or_raise
+
+def configured_databases():
+    config_path = Config.BASE_DIR / "config" / "databases.yaml"
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    return [
+        db["target_db"]
+        for db in config.get("databases", [])
+        if db.get("enabled", True)
+    ]
 
 def main():
     print("\n" + "="*60)
@@ -26,10 +39,21 @@ def main():
     # Check local databases
     print("\n💾 Local Databases:")
     import subprocess
-    env = {"PGPASSWORD": Config.LOCAL_DB_CONFIG['password']}
+    env = os.environ.copy()
+    env.update({"PGPASSWORD": Config.LOCAL_DB_CONFIG['password']})
     
-    for db in ["AG_Dev", "Telios_LMS_Survey_Dev"]:
-        cmd = ["psql", "-h", Config.LOCAL_DB_CONFIG['host'], 
+    try:
+        psql = pg_tool_or_raise("psql")
+    except FileNotFoundError as e:
+        print(f"  ❌ {e}")
+        psql = None
+
+    for db in configured_databases():
+        if not psql:
+            print(f"  ❌ {db}: psql not available")
+            continue
+
+        cmd = [psql, "-h", Config.LOCAL_DB_CONFIG['host'], 
                "-p", str(Config.LOCAL_DB_CONFIG['port']),
                "-U", Config.LOCAL_DB_CONFIG['username'], 
                "-d", db, "-tAc", 
@@ -44,8 +68,8 @@ def main():
     
     print("\n" + "="*60)
     print("💡 Recommendations:")
-    print("  • If backups are missing, run: ./run.sh --force")
-    print("  • If databases are empty, run: ./run.sh --restore-only")
+    print("  • If backups are missing, run: run.bat --force")
+    print("  • If databases are empty, run: run.bat --restore-only")
     print("="*60)
 
 if __name__ == "__main__":

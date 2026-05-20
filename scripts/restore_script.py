@@ -14,6 +14,8 @@ def main():
     parser.add_argument('--cooldown', type=int, default=7, help='Cooldown period in days (default: 7)')
     parser.add_argument('--status', action='store_true', help='Show restore status')
     parser.add_argument('--reset', action='store_true', help='Reset restore tracking')
+    parser.add_argument('--database', '-d', default='both',
+                        help='Database name or target DB from config/databases.yaml, or both')
     
     args = parser.parse_args()
     logger = setup_logger("restore")
@@ -47,7 +49,7 @@ def main():
     
     logger.info(f"Starting restore (cooldown: {args.cooldown} days)...")
     manager = RestoreManager(restore_cooldown_days=args.cooldown)
-    results = manager.restore_all_databases(force=args.force)
+    results = manager.restore_all(force=args.force, target_name=args.database)
     
     print("\n" + "="*60)
     print("RESTORE RESULTS")

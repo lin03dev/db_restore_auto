@@ -3,21 +3,35 @@
 Quick validation for both databases after restore
 """
 import sys
+import os
 from pathlib import Path
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import Config
 from utils.logger import setup_logger
+from utils.pg_tools import pg_tool_or_raise
 
 logger = setup_logger("quick_validate")
+
+def configured_databases():
+    config_path = Config.BASE_DIR / "config" / "databases.yaml"
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    return [
+        db["target_db"]
+        for db in config.get("databases", [])
+        if db.get("enabled", True)
+    ]
 
 def quick_check(database: str):
     """Perform quick health check on database"""
     import subprocess
     
     db_config = Config.LOCAL_DB_CONFIG
-    env = {"PGPASSWORD": db_config['password']}
+    env = os.environ.copy()
+    env.update({"PGPASSWORD": db_config['password']})
     
     print(f"\n🔍 Quick check for {database}:")
     print("-" * 40)
@@ -29,8 +43,14 @@ def quick_check(database: str):
     WHERE table_schema NOT IN ('information_schema', 'pg_catalog');
     """
     
+    try:
+        psql = pg_tool_or_raise("psql")
+    except FileNotFoundError as e:
+        print(f"  ❌ {e}")
+        return False
+
     cmd = [
-        "psql", "-h", db_config['host'], "-p", str(db_config['port']),
+        psql, "-h", db_config['host'], "-p", str(db_config['port']),
         "-U", db_config['username'], "-d", database, "-tAc", check_tables
     ]
     
@@ -65,7 +85,7 @@ def quick_check(database: str):
     
     # Check 3: Database size
     check_size = "SELECT pg_database_size(current_database()) / 1024 / 1024 || ' MB'"
-    cmd[7] = check_size
+    cmd[-1] = check_size
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode == 0:
         print(f"  💾 Size: {result.stdout.strip()}")
@@ -77,7 +97,7 @@ def main():
     print("QUICK POST-RESTORE VALIDATION")
     print("="*60)
     
-    databases = ["AG_Dev", "Telios_LMS_Survey_Dev"]
+    databases = configured_databases()
     all_healthy = True
     
     for db in databases:
@@ -91,8 +111,9 @@ def main():
         print("⚠️  Some databases have issues. Run full validation for details.")
     
     print("\n💡 For detailed validation run:")
-    print("   python3 scripts/validate_restore.py --all")
+    print("   python scripts/validate_restore.py --all")
     print("="*60)
+    return 0 if all_healthy else 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
