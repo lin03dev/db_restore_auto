@@ -41,12 +41,12 @@ def main():
     print("\n" + "="*60)
     print("BACKUP RESULTS")
     print("="*60)
-    for db, result in results.items():
-        status = "✅ SUCCESS" if result['success'] else "❌ FAILED"
-        action = "🔄 New backup" if result.get('backup_performed') else "⏭️ Skipped (recent)"
+    for db, success in results.items():
+        status = "✅ SUCCESS" if success else "❌ FAILED"
+        action = "🔄 New backup" if success else "❌ Failed"
         print(f"{status}: {db} - {action}")
     
-    sys.exit(0 if all(r['success'] for r in results.values()) else 1)
+    sys.exit(0 if all(results.values()) else 1)
 
 if __name__ == "__main__":
     main()

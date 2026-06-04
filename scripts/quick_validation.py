@@ -62,31 +62,36 @@ def quick_check(database: str):
         print(f"  ❌ Failed to connect: {result.stderr}")
         return False
     
-    # Check 2: Check for orphaned records
+    # Check 2: Check for foreign key constraints
     check_orphans = """
     WITH RECURSIVE fk_check AS (
         SELECT 
-            tc.table_name,
-            kcu.column_name,
-            ccu.table_name AS foreign_table
+            tc.constraint_name
         FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-            ON tc.constraint_name = kcu.constraint_name
-        JOIN information_schema.constraint_column_usage ccu
-            ON ccu.constraint_name = tc.constraint_name
         WHERE tc.constraint_type = 'FOREIGN KEY'
         LIMIT 10
     )
     SELECT COUNT(*) FROM fk_check;
     """
-    
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    print(f"  ✅ Foreign keys check passed")
+    cmd_orphans = [
+        psql, "-h", db_config['host'], "-p", str(db_config['port']),
+        "-U", db_config['username'], "-d", database, "-tAc", check_orphans
+    ]
+    result = subprocess.run(cmd_orphans, capture_output=True, text=True, env=env)
+    if result.returncode == 0:
+        fk_count = result.stdout.strip()
+        print(f"  ✅ Foreign key constraints: {fk_count}")
+    else:
+        print(f"  ❌ Foreign keys check failed: {result.stderr}")
+        return False
     
     # Check 3: Database size
     check_size = "SELECT pg_database_size(current_database()) / 1024 / 1024 || ' MB'"
-    cmd[-1] = check_size
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    cmd_size = [
+        psql, "-h", db_config['host'], "-p", str(db_config['port']),
+        "-U", db_config['username'], "-d", database, "-tAc", check_size
+    ]
+    result = subprocess.run(cmd_size, capture_output=True, text=True, env=env)
     if result.returncode == 0:
         print(f"  💾 Size: {result.stdout.strip()}")
     

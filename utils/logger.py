@@ -18,7 +18,11 @@ def setup_logger(name: str) -> logging.Logger:
     """Setup logger with file and console handlers"""
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, Config.LOG_LEVEL))
-    
+
+    # Prevent duplicate handlers when setup_logger is called multiple times
+    if logger.handlers:
+        return logger
+
     # Create formatters
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
