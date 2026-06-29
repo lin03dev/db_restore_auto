@@ -1,0 +1,34 @@
+databases:
+  - name: "AG"
+    source_dump: "AG_Prod.dump"
+    target_db: "AG_Dev"
+    enabled: true
+    description: "Requires office/VPN IP for remote dump"
+    source_config:
+      connection_string_env: "AG_PROD_CONNECTION"
+      pg_dump_path: "pg_dump"
+
+  - name: "Telios"
+    source_dump: "Telios_Prod.dump"
+    target_db: "Telios_Dev"
+    enabled: true
+    description: "Remote dump available from approved IPs only"
+    source_config:
+      connection_string_env: "TELIOS_PROD_CONNECTION"
+      pg_dump_path: "pg_dump"
+
+  - name: "LMS"
+    source_dump: "LMS_Prod.dump"
+    target_db: "LMS_Dev"
+    enabled: true
+    description: "Learning management system production database"
+    source_config:
+      connection_string_env: "LMS_PROD_CONNECTION"
+      pg_dump_path: "pg_dump"
+
+# Used when LOCAL_DB_* env vars are empty or placeholders
+local_postgres:
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: ""

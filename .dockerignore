@@ -1,0 +1,6 @@
+.git
+**/__pycache__
+backend/.env
+backend/dumps/*
+backend/logs/*
+.env.docker

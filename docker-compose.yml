@@ -1,0 +1,74 @@
+name: db-restore-auto
+
+x-security: &security
+  init: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+x-web-hardening: &web-hardening
+  <<: *security
+  read_only: true
+  tmpfs:
+    - /tmp
+    - /var/cache/nginx
+    - /var/run
+
+services:
+  api:
+    profiles: [restore, all]
+    build:
+      context: backend
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-8002}
+      RELOAD: "false"
+      API_KEY: ${API_KEY:-}
+      LOCAL_DB_HOST: ${LOCAL_DB_HOST:-host.docker.internal}
+      LOCAL_DB_PORT: ${LOCAL_DB_PORT:-5432}
+      LOCAL_DB_USER: ${LOCAL_DB_USER:-postgres}
+      LOCAL_DB_PASSWORD: ${LOCAL_DB_PASSWORD:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./backend/dumps:/app/dumps
+      - restore_logs:/app/logs
+      - restore_state:/app/state
+      - ./backend/config/databases.yaml:/app/config/databases.yaml:ro
+    networks:
+      - internal
+    restart: unless-stopped
+    <<: *security
+
+  web:
+    profiles: [restore, all]
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+        VITE_API_KEY: ${API_KEY:-}
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${RESTORE_WEB_PORT:-5174}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+    <<: *web-hardening
+
+volumes:
+  restore_logs:
+  restore_state:
+
+networks:
+  internal:
+    driver: bridge

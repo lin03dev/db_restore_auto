@@ -24,19 +24,24 @@ wheels/
 *.egg
 
 # Database dumps (too large for git)
-dumps/*.dump
-dumps/*.sql
+backend/dumps/*.dump
+backend/dumps/*.sql
 *.dump
 *.sql
 
-# Logs
-logs/
+# Logs and runtime state
+backend/logs/
 *.log
+backend/.restore_tracking.json
 
 # Configuration with secrets
-.env
-config/databases.yaml
-.restore_tracking.json
+backend/.env
+backend/config/databases.yaml
+frontend/.env
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
 
 # IDE
 .vscode/
@@ -52,9 +57,11 @@ config/databases.yaml
 htmlcov/
 
 # Reports
-reports/
+backend/logs/reports/
 *.json
-!requirements.json
+!frontend/package.json
+!frontend/tsconfig.json
+!frontend/tsconfig.app.json
 
 # Temporary files
 /tmp/
@@ -65,3 +72,6 @@ reports/
 # OS files
 Thumbs.db
 .desktop.ini
+
+# Docker local env (keep .env.docker.example tracked)
+.env.docker
